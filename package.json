@@ -1,0 +1,24 @@
+{
+  "name": "pi-protect-secret",
+  "version": "0.1.0",
+  "description": "Pi extension to prevent secret credential leakage using heuristics and TypeSafe Jev model",
+  "type": "module",
+  "main": "./index.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npx tsx tests/heuristics.test.ts && npx tsx tests/config.test.ts && npx tsx tests/extension.test.ts"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "typescript": "^5.9.3"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
