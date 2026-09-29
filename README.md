@@ -41,7 +41,7 @@ You can optionally configure `pi-protect-secret` in `~/.pi/agent/settings.json`:
 ```json
 {
   "packages": [
-    "D:\\claude\\pi-extensions\\pi-protect-secret"
+    "git:github.com/Yugikira/pi-protect-secret"
   ],
   "protectsecret": {
     "provider": "typesafe",
