@@ -100,9 +100,22 @@ export default function (pi: ExtensionAPI, options?: ProtectSecretOptions) {
 			// Display status
 			const config = resolveConfig({
 				thresholdOverride: getThresholdFromFlag(),
+				ctx,
 			});
 
-			const keyStatus = config.apiKey ? "Configured" : "MISSING (Set in settings.json or env)";
+			let keyStatus = config.apiKey ? "Configured (override)" : "Not explicitly set";
+			if (ctx?.modelRegistry) {
+				const auth = ctx.modelRegistry.getProviderAuthStatus(config.provider);
+				if (auth?.configured) {
+					keyStatus = config.apiKey ? "Configured (override, ready)" : "Ready via Pi credentials";
+				} else if (!config.apiKey) {
+					keyStatus = "MISSING (Set in settings.json, env, or /login)";
+				}
+			} else if (config.apiKey) {
+				keyStatus = "Configured";
+			} else {
+				keyStatus = "MISSING (Set in settings.json or env)";
+			}
 			const info = [
 				`🛡️ **pi-protect-secret status**:`,
 				`• State: ${disabled ? "DISABLED" : "ACTIVE"}`,
@@ -132,6 +145,7 @@ export default function (pi: ExtensionAPI, options?: ProtectSecretOptions) {
 
 		const config = resolveConfig({
 			thresholdOverride: getThresholdFromFlag(),
+			ctx,
 		});
 
 		stats.totalToolCalls++;
@@ -152,8 +166,8 @@ export default function (pi: ExtensionAPI, options?: ProtectSecretOptions) {
 			return undefined;
 		}
 
-		// Case 2: "bash" tool
-		if (event.toolName === "bash") {
+		// Case 2: Shell execution tools ("bash" or "powershell")
+		if (event.toolName === "bash" || event.toolName === "powershell") {
 			const command = (event.input as { command?: string })?.command;
 			if (!command || typeof command !== "string") {
 				return undefined;

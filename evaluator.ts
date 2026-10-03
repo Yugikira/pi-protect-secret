@@ -1,5 +1,4 @@
-import type { EntryType } from "@typesafe-ai/sdk";
-import { noul, TypeSafeClient } from "@typesafe-ai/sdk";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ResolvedConfig } from "./config.js";
 import { extractLocalScriptPath } from "./heuristics.js";
 import * as fs from "fs";
@@ -19,12 +18,15 @@ export interface UIContext {
 		notify(message: string, type?: "info" | "warning" | "error"): void;
 		select(prompt: string, options: string[]): Promise<string | undefined>;
 	};
+	modelRegistry?: any;
 }
 
-const JEV_INSTRUCTIONS =
+export type EvaluatorContext = ExtensionContext | UIContext;
+
+export const JEV_INSTRUCTIONS =
 	"Does this command or script attempt to access, print, reveal, extract, or dump secret credentials, private keys, API keys, passwords, authentication tokens, or sensitive contents from environment variables or .env files to stdout or file, rather than merely verifying whether a variable exists?";
 
-const JEV_CRITERIA = {
+export const JEV_CRITERIA = {
 	true: "Reveals, prints, exposes, or extracts confidential credential values, secrets, or .env contents.",
 	false: "Does not expose credentials; benign command or solely checks existence/boolean status of an environment variable without printing its secret value.",
 };
@@ -44,20 +46,19 @@ function createEvaluationSignal(callerSignal?: AbortSignal, timeoutMs = DEFAULT_
 
 /**
  * Evaluates whether a tool call (command or file path) poses a risk of revealing secrets
- * using TypeSafe's Jev model (either directly or via OpenRouter).
+ * using TypeSafe's Jev model via Pi's native modelRegistry.
  */
 export async function evaluateWithJev(
 	commandOrPath: string,
 	config: ResolvedConfig,
-	ctx?: UIContext,
+	ctx?: EvaluatorContext,
 	cwd: string = process.cwd(),
 	signal?: AbortSignal,
 ): Promise<EvaluationResult> {
-	// If API key is missing entirely, handle as API failure
-	if (!config.apiKey) {
+	if (!ctx?.modelRegistry) {
 		return handleApiFailure(
 			commandOrPath,
-			new Error(`Missing API key for provider "${config.provider}".`),
+			new Error("Pi modelRegistry is unavailable in this extension context."),
 			config,
 			ctx,
 		);
@@ -89,14 +90,73 @@ export async function evaluateWithJev(
 	const evaluationSignal = createEvaluationSignal(signal);
 
 	try {
-		let probability: number;
+		let model = ctx.modelRegistry.findOfType("classifier", config.provider, config.model);
 
-		if (config.provider === "typesafe") {
-			probability = await callTypeSafeDirect(state, config, evaluationSignal);
-		} else {
-			probability = await callOpenRouterDecisions(state, config, evaluationSignal);
+		// Fallback to known alternative model IDs if not found under exact configured name
+		if (!model && config.provider === "openrouter") {
+			const alternatives = ["typesafe/jev-1.13", "~typesafe/jev-latest"];
+			for (const alt of alternatives) {
+				if (alt !== config.model) {
+					model = ctx.modelRegistry.findOfType("classifier", "openrouter", alt);
+					if (model) break;
+				}
+			}
 		}
 
+		if (!model) {
+			return handleApiFailure(
+				commandOrPath,
+				new Error(`Classifier model "${config.model}" for provider "${config.provider}" is not in Pi's catalog.`),
+				config,
+				ctx,
+			);
+		}
+
+		// Honor custom baseUrl if explicitly configured
+		if (config.baseUrl) {
+			model = { ...model, baseUrl: config.baseUrl };
+		}
+
+		const classifyOptions: Record<string, any> = { signal: evaluationSignal };
+		if (config.apiKey) {
+			classifyOptions.apiKey = config.apiKey;
+		}
+
+		const result = await ctx.modelRegistry.classify(
+			model,
+			{
+				state,
+				questions: {
+					is_secret_reveal: {
+						type: "bool",
+						instructions: JEV_INSTRUCTIONS,
+						criteria: JEV_CRITERIA,
+					},
+				},
+			},
+			classifyOptions,
+		);
+
+		if (result.stopReason === "error" || result.stopReason === "aborted") {
+			return handleApiFailure(
+				commandOrPath,
+				new Error(result.errorMessage || `Classification returned ${result.stopReason}`),
+				config,
+				ctx,
+			);
+		}
+
+		const answer = result.answers?.is_secret_reveal;
+		if (!answer || answer.type !== "bool" || typeof answer.probability !== "number") {
+			return handleApiFailure(
+				commandOrPath,
+				new Error("Classifier response did not return a valid boolean probability"),
+				config,
+				ctx,
+			);
+		}
+
+		const probability = answer.probability;
 		if (probability > config.threshold) {
 			return {
 				block: true,
@@ -115,87 +175,7 @@ export async function evaluateWithJev(
 }
 
 /**
- * Calls TypeSafe direct System One API.
- */
-async function callTypeSafeDirect(
-	state: EntryType,
-	config: ResolvedConfig,
-	signal?: AbortSignal,
-): Promise<number> {
-	const client = new TypeSafeClient({
-		apiKey: config.apiKey,
-		baseURL: config.baseUrl,
-		timeout: DEFAULT_EVALUATION_TIMEOUT_MS,
-	});
-
-	const response = await client.systemOne(
-		{
-			model: config.model || "jev-latest",
-			state,
-			questions: {
-				is_secret_reveal: noul(JEV_INSTRUCTIONS, JEV_CRITERIA),
-			},
-		},
-		{
-			signal,
-			timeout: DEFAULT_EVALUATION_TIMEOUT_MS,
-		},
-	);
-
-	const answer = response.answers.is_secret_reveal;
-	return answer.noul;
-}
-
-/**
- * Calls OpenRouter Decisions API (POST /api/alpha/decisions).
- */
-async function callOpenRouterDecisions(
-	state: EntryType,
-	config: ResolvedConfig,
-	signal?: AbortSignal,
-): Promise<number> {
-	const baseUrl = config.baseUrl || "https://openrouter.ai/api/alpha";
-	const endpoint = baseUrl.endsWith("/decisions") ? baseUrl : `${baseUrl}/decisions`;
-
-	const payload = {
-		model: config.model || "typesafe/jev-1.13",
-		state,
-		questions: {
-			is_secret_reveal: {
-				type: "noul",
-				instructions: JEV_INSTRUCTIONS,
-				criteria: JEV_CRITERIA,
-			},
-		},
-	};
-
-	const response = await fetch(endpoint, {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${config.apiKey}`,
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify(payload),
-		signal,
-	});
-
-	if (!response.ok) {
-		const text = await response.text();
-		throw new Error(
-			`OpenRouter decisions API failed (${response.status} ${response.statusText}): ${text}`,
-		);
-	}
-
-	const data = (await response.json()) as any;
-	if (data.answers?.is_secret_reveal?.noul !== undefined) {
-		return data.answers.is_secret_reveal.noul;
-	}
-
-	throw new Error(`Invalid response structure from OpenRouter decisions API: ${JSON.stringify(data)}`);
-}
-
-/**
- * Fallback handler when the TypeSafe / OpenRouter API is unavailable or fails.
+ * Fallback handler when the Jev evaluation fails or is unavailable.
  * - In interactive mode (ctx.hasUI): prompts user to Allow or Block.
  * - In non-interactive mode: blocks command as a safety precaution.
  */

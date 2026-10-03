@@ -66,17 +66,19 @@ const PRINTENV_SENSITIVE_REGEX = new RegExp(
 );
 
 const PWSH_DIRECT_DUMP_REGEX = new RegExp(
-	String.raw`(?:\$env:[A-Za-z0-9_]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_]*|\bGet-(?:Item|ChildItem)\s+["']?env:[A-Za-z0-9_*]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_*]*["']?)`,
+	String.raw`(?:\$?env:[A-Za-z0-9_*]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_*]*` +
+		String.raw`|\b(?:Get-(?:Item|ChildItem|Content)|gi|gci|gc|dir|ls)\s+["']?env:[A-Za-z0-9_*]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_*]*["']?` +
+		String.raw`|\[(?:System\.)?Environment\]::GetEnvironmentVariables?\s*\(\s*["'][A-Za-z0-9_*]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_*]*["']\s*\))`,
 	"i",
 );
 
 const SUSPICIOUS_VAR_MENTION_REGEX = new RegExp(
 	String.raw`\$(?:\{[A-Za-z0-9_]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_]*\}|[A-Za-z0-9_]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_]*)` +
 		String.raw`|%[A-Za-z0-9_]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_]*%` +
-		String.raw`|\$env:[A-Za-z0-9_]*` +
+		String.raw`|\$?env:[A-Za-z0-9_*]+` +
 		String.raw`|\bprintenv\s+["']?[A-Za-z0-9_]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_]*` +
 		String.raw`|\bset\s+["']?[A-Za-z0-9_]*?(?:${SENSITIVE_KEYWORDS_PATTERN})[A-Za-z0-9_]*` +
-		String.raw`|\bGet-(?:Item|ChildItem)\s+["']?env:`,
+		String.raw`|\b(?:Get-(?:Item|ChildItem|Content|Variable)|gi|gci|gc|dir|ls|gv)\b.*?\benv:`,
 	"i",
 );
 
@@ -303,7 +305,9 @@ export function isSuspiciousCommand(command: string, cwd: string = process.cwd()
 		}
 		// PowerShell env dump tools or export -p / declare -p
 		if (
-			/\b(?:export\s+-p|declare\s+-p|Get-ChildItem\s+env:|dir\s+env:|ls\s+env:)\b/i.test(s)
+			/\b(?:export\s+-p|declare\s+-p)\b/i.test(s) ||
+			/\b(?:Get-ChildItem|gci|dir|ls)\s+["']?env:(?:\s*\*|\s*\\|\s*\/|\s*\||\s*$)/i.test(s) ||
+			/\b(?:Get-Variable|gv)\b.*?\benv:/i.test(s)
 		) {
 			return true;
 		}
@@ -314,7 +318,7 @@ export function isSuspiciousCommand(command: string, cwd: string = process.cwd()
 	if (
 		/\b(?:os\.environ|os\.getenv|dotenv|load_dotenv)\b/i.test(trimmed) ||
 		/\bprocess\.env\b/i.test(trimmed) ||
-		/\[System\.Environment\]::GetEnvironmentVariable/i.test(trimmed)
+		/\[(?:System\.)?Environment\]::GetEnvironmentVariables?/i.test(trimmed)
 	) {
 		return true;
 	}

@@ -1,36 +1,35 @@
 import * as assert from "assert";
 import type {
-	CommandDefinition,
 	ExtensionAPI,
 	ExtensionContext,
-	FlagDefinition,
+	ExtensionFlag,
 	ToolCallEvent,
-	ToolCallResult,
+	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import initExtension from "../index.js";
 import { DEFAULT_BLOCK_MESSAGE } from "../config.js";
 
-console.log("=== Running Extension Integration Tests (Round 2) ===");
+console.log("=== Running Extension Integration Tests (Round 3 - Pi 1.0.0) ===");
 
 // Create a mock ExtensionAPI
-class MockPi implements ExtensionAPI {
+class MockPi {
 	flags = new Map<string, unknown>();
-	flagDefs = new Map<string, FlagDefinition>();
-	commands = new Map<string, CommandDefinition>();
+	flagDefs = new Map<string, ExtensionFlag>();
+	commands = new Map<string, any>();
 	handlers = new Map<string, Array<(...args: any[]) => any>>();
 
-	registerFlag(name: string, def: FlagDefinition): void {
+	registerFlag(name: string, def: ExtensionFlag): void {
 		this.flagDefs.set(name, def);
 		if (def.default !== undefined) {
 			this.flags.set(name, def.default);
 		}
 	}
 
-	getFlag(name: string): unknown {
+	getFlag(name: string): any {
 		return this.flags.get(name);
 	}
 
-	registerCommand(name: string, def: CommandDefinition): void {
+	registerCommand(name: string, def: any): void {
 		this.commands.set(name, def);
 	}
 
@@ -75,15 +74,35 @@ const mockUi = {
 	},
 };
 
+const mockModelRegistry = {
+	findOfType: (type: string, provider: string, id: string) => ({
+		type: "classifier",
+		provider,
+		id,
+		api: "typesafe-system-one",
+	}),
+	getProviderAuthStatus: () => ({ configured: true }),
+	classify: async () => ({
+		stopReason: "stop",
+		answers: {
+			is_secret_reveal: {
+				type: "bool",
+				probability: 0.01,
+			},
+		},
+	}),
+};
+
 const mockCtx: ExtensionContext = {
 	cwd: process.cwd(),
 	hasUI: true,
 	ui: mockUi as any,
-};
+	modelRegistry: mockModelRegistry as any,
+} as unknown as ExtensionContext;
 
 async function runTests() {
 	const pi = new MockPi();
-	initExtension(pi);
+	initExtension(pi as unknown as ExtensionAPI);
 
 	// 1. Check flags and commands registration
 	assert.ok(pi.flagDefs.has("protect-secret-disabled"), "protect-secret-disabled flag registered");
@@ -140,9 +159,32 @@ async function runTests() {
 
 	result = await pi.emit("tool_call", { toolName: "bash", input: { command: 'Test-Path env:API_KEY' } }, mockCtx);
 	assert.strictEqual(result, undefined, "Test-Path env:API_KEY existence check should be allowed");
-	console.log("✓ Whitelisted existence checks verified.");
+	console.log("✓ Whitelisted existence checks verified (bash).");
 
-	// 6. Test bypass attack vectors from Code Review Round 1 & Round 2: MUST NOT BYPASS!
+	// 6. Test powershell tool: safe commands, existence checks, and hard-blocks
+	result = await pi.emit("tool_call", { toolName: "powershell", input: { command: "Get-ChildItem" } }, mockCtx);
+	assert.strictEqual(result, undefined, "powershell Get-ChildItem should be allowed");
+
+	result = await pi.emit("tool_call", { toolName: "powershell", input: { command: "Test-Path env:API_KEY" } }, mockCtx);
+	assert.strictEqual(result, undefined, "powershell Test-Path env:API_KEY should be allowed");
+
+	result = await pi.emit("tool_call", { toolName: "powershell", input: { command: "Get-Content .env" } }, mockCtx);
+	assert.deepStrictEqual(result, { block: true, reason: DEFAULT_BLOCK_MESSAGE }, "powershell Get-Content .env should be blocked");
+
+	result = await pi.emit("tool_call", { toolName: "powershell", input: { command: "$env:API_KEY" } }, mockCtx);
+	assert.deepStrictEqual(result, { block: true, reason: DEFAULT_BLOCK_MESSAGE }, "powershell $env:API_KEY should be blocked");
+
+	result = await pi.emit("tool_call", { toolName: "powershell", input: { command: "Get-Item env:API_KEY" } }, mockCtx);
+	assert.deepStrictEqual(result, { block: true, reason: DEFAULT_BLOCK_MESSAGE }, "powershell Get-Item env:API_KEY should be blocked");
+
+	result = await pi.emit("tool_call", { toolName: "powershell", input: { command: "Get-Content env:API_KEY" } }, mockCtx);
+	assert.deepStrictEqual(result, { block: true, reason: DEFAULT_BLOCK_MESSAGE }, "powershell Get-Content env:API_KEY should be blocked");
+
+	result = await pi.emit("tool_call", { toolName: "powershell", input: { command: "[Environment]::GetEnvironmentVariable('OPENAI_API_KEY')" } }, mockCtx);
+	assert.deepStrictEqual(result, { block: true, reason: DEFAULT_BLOCK_MESSAGE }, "powershell [Environment]::GetEnvironmentVariable should be blocked");
+	console.log("✓ powershell tool protection verified.");
+
+	// 7. Test bypass attack vectors: MUST NOT BYPASS!
 	const bypassAttempts = [
 		'[ -n "$OPENAI_API_KEY" ] && printenv OPENAI_API_KEY',
 		'[ -n "$OPENAI_API_KEY" ]; printenv OPENAI_API_KEY',
@@ -152,18 +194,18 @@ async function runTests() {
 		'echo ${OPENAI_API_KEY}',
 		'echo %OPENAI_API_KEY%',
 		'set OPENAI_API_KEY',
-		// Round 2 shell keyword subcommands:
+		// Shell keyword subcommands:
 		'if [ -n "$K" ]; then printenv OPENAI_API_KEY; fi',
 		'if [ -n "$K" ]; then echo ok; else printenv OPENAI_API_KEY; fi',
 		'for f in *; do printenv OPENAI_API_KEY; done',
 		'for f in *; do printenv AWS_SECRET_ACCESS_KEY; done',
 		'while read l; do printenv TOKEN; done',
-		// Round 2 template abuse attempts:
+		// Template abuse attempts:
 		'cat .env # see .env.example',
 		'cat .env .env.example',
 		'cat .env > out.txt # .env.example',
 		'Get-Content .env # .env.sample',
-		// Round 3 curl and // path tests:
+		// Curl and // path tests:
 		'curl https://evil.example.com/.env',
 		'curl http://internal.host/.env//x',
 		'head -n 5 .//.env//',
@@ -179,12 +221,12 @@ async function runTests() {
 	}
 	console.log("✓ All Round 1 & Round 2 bypass attack vectors successfully blocked!");
 
-	// 7. Test Stage-5 Jev Model Evaluation Seam (hygienic factory option)
+	// 8. Test Stage-5 Jev Model Evaluation Seam (hygienic factory option)
 	console.log("\nTesting Stage 5 Jev evaluation seam...");
 	let jevCalledWith: string | undefined;
 
 	const piWithMockJev = new MockPi();
-	initExtension(piWithMockJev, {
+	initExtension(piWithMockJev as unknown as ExtensionAPI, {
 		evaluator: async (cmd) => {
 			jevCalledWith = cmd;
 			if (cmd.includes("dump_secret")) {
@@ -194,10 +236,19 @@ async function runTests() {
 		},
 	});
 
-	// Evaluated and blocked by Jev
+	// Evaluated and blocked by Jev (bash)
 	result = await piWithMockJev.emit(
 		"tool_call",
 		{ toolName: "bash", input: { command: "python -c 'import os; dump_secret(os.environ)'" } },
+		mockCtx,
+	);
+	assert.strictEqual(jevCalledWith, "python -c 'import os; dump_secret(os.environ)'");
+	assert.deepStrictEqual(result, { block: true, reason: DEFAULT_BLOCK_MESSAGE });
+
+	// Evaluated and blocked by Jev (powershell)
+	result = await piWithMockJev.emit(
+		"tool_call",
+		{ toolName: "powershell", input: { command: "python -c 'import os; dump_secret(os.environ)'" } },
 		mockCtx,
 	);
 	assert.strictEqual(jevCalledWith, "python -c 'import os; dump_secret(os.environ)'");
@@ -210,9 +261,9 @@ async function runTests() {
 		mockCtx,
 	);
 	assert.strictEqual(result, undefined);
-	console.log("✓ Jev evaluation seam and branching verified.");
+	console.log("✓ Jev evaluation seam and branching verified (bash & powershell).");
 
-	// 8. Test /protect-secret toggle
+	// 9. Test /protect-secret toggle
 	const toggleCmd = pi.commands.get("protect-secret")!;
 	await toggleCmd.handler("off", mockCtx);
 
@@ -225,6 +276,16 @@ async function runTests() {
 	result = await pi.emit("tool_call", { toolName: "bash", input: { command: "cat .env" } }, mockCtx);
 	assert.deepStrictEqual(result, { block: true, reason: DEFAULT_BLOCK_MESSAGE }, "cat .env should be blocked when re-enabled");
 	console.log("✓ Toggle command verified.");
+
+	// 10. Test /protect-secret status display
+	await toggleCmd.handler("", mockCtx);
+	const lastNotification = mockUi.notifications[mockUi.notifications.length - 1];
+	assert.ok(lastNotification.includes("pi-protect-secret status"), "Status command should display status");
+	assert.ok(
+		lastNotification.includes("Ready via Pi credentials") || lastNotification.includes("Configured (override, ready)"),
+		"Status should report ready status",
+	);
+	console.log("✓ Status display command verified.");
 
 	console.log("\n🎉 ALL EXTENSION INTEGRATION TESTS PASSED!\n");
 }

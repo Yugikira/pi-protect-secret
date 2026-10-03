@@ -32,8 +32,8 @@ export const DEFAULT_MODELS: Record<ProviderType, string> = {
 };
 
 export const DEFAULT_BASE_URLS: Record<ProviderType, string> = {
-	typesafe: "https://api.typesafe.ai",
-	openrouter: "https://openrouter.ai/api/alpha",
+	typesafe: "https://api.typesafe.ai/v1",
+	openrouter: "https://openrouter.ai/api/v1",
 };
 
 /**
@@ -57,6 +57,7 @@ export function loadPiSettings(): { protectsecret?: ProtectSecretSettings } {
  */
 export function resolveConfig(options?: {
 	thresholdOverride?: number;
+	ctx?: { modelRegistry?: any };
 }): ResolvedConfig {
 	const settings = loadPiSettings().protectsecret ?? {};
 
@@ -65,13 +66,17 @@ export function resolveConfig(options?: {
 	if (settings.provider === "openrouter" || settings.provider === "typesafe") {
 		provider = settings.provider;
 	} else {
-		// Auto-detect based on available keys
-		const hasTypeSafeEnv = Boolean(process.env.TYPESAFE_API_KEY || process.env.typesafe_api_key);
-		const hasOpenRouterEnv = Boolean(process.env.OPENROUTER_API_KEY || process.env.openrouter_api_key);
+		// Auto-detect based on Pi credentials or available env keys
+		const hasTypeSafeAuth =
+			Boolean(process.env.TYPESAFE_API_KEY || process.env.typesafe_api_key) ||
+			Boolean(options?.ctx?.modelRegistry?.getProviderAuthStatus?.("typesafe")?.configured);
+		const hasOpenRouterAuth =
+			Boolean(process.env.OPENROUTER_API_KEY || process.env.openrouter_api_key) ||
+			Boolean(options?.ctx?.modelRegistry?.getProviderAuthStatus?.("openrouter")?.configured);
 
-		if (hasTypeSafeEnv) {
+		if (hasTypeSafeAuth) {
 			provider = "typesafe";
-		} else if (hasOpenRouterEnv) {
+		} else if (hasOpenRouterAuth) {
 			provider = "openrouter";
 		} else {
 			provider = "typesafe"; // default

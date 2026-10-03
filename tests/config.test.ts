@@ -38,6 +38,30 @@ try {
 	assert.strictEqual(cfg.apiKey, "test_openrouter_key");
 	assert.strictEqual(cfg.model, "typesafe/jev-1.13");
 
+	// 2. Test auto-detection via ctx.modelRegistry (e.g. OpenRouter /login OAuth session with no env vars)
+	delete process.env.OPENROUTER_API_KEY;
+	const mockOpenRouterOAuthCtx = {
+		modelRegistry: {
+			getProviderAuthStatus: (provider: string) => ({
+				configured: provider === "openrouter",
+			}),
+		},
+	};
+	cfg = resolveConfig({ ctx: mockOpenRouterOAuthCtx as any });
+	assert.strictEqual(cfg.provider, "openrouter", "OpenRouter OAuth session should be auto-detected");
+	assert.strictEqual(cfg.model, "typesafe/jev-1.13");
+
+	const mockTypeSafeOAuthCtx = {
+		modelRegistry: {
+			getProviderAuthStatus: (provider: string) => ({
+				configured: provider === "typesafe",
+			}),
+		},
+	};
+	cfg = resolveConfig({ ctx: mockTypeSafeOAuthCtx as any });
+	assert.strictEqual(cfg.provider, "typesafe", "TypeSafe OAuth session should be auto-detected");
+	assert.strictEqual(cfg.model, "jev-latest");
+
 	console.log("✓ Config resolution tests passed.");
 } finally {
 	process.env = originalEnv;

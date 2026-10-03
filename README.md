@@ -1,8 +1,8 @@
 # pi-protect-secret
 
-`pi-protect-secret` is a Pi Coding Agent extension that prevents the AI agent from accessing, dumping, or reading secret credentials (such as API keys, SSH private keys, auth tokens, and `.env` credentials) through the `read` or `bash` tools.
+`pi-protect-secret` is a Pi Coding Agent extension that prevents the AI agent from accessing, dumping, or reading secret credentials (such as API keys, SSH private keys, auth tokens, and `.env` credentials) through the `read`, `bash`, or `powershell` tools.
 
-Instead of relying purely on regex patterns, `pi-protect-secret` combines **zero-latency local pre-filtering** with **TypeSafe AI's Jev model** (`noul` primitive) to accurately evaluate whether a command or script attempts to reveal sensitive credentials.
+Instead of relying purely on regex patterns, `pi-protect-secret` combines **zero-latency local pre-filtering** with **Pi 1.0.0's native classifier API** running **TypeSafe AI's Jev model** to accurately evaluate whether a command or script attempts to reveal sensitive credentials.
 
 ---
 
@@ -14,9 +14,11 @@ Instead of relying purely on regex patterns, `pi-protect-secret` combines **zero
    * **Hard Block on Direct Dumps (0ms)**: Obvious credential reads (`read('.env')`, `cat .env`, `echo $API_KEY`, `$env:SECRET`) are blocked immediately without network calls.
    * **Deep Evaluation via TypeSafe Jev**: Complex or ambiguous scripts (Python `os.environ`, PowerShell scripts, inline code) are evaluated using TypeSafe's Jev model. Commands with a probability above `0.75` are blocked.
 
-2. **Dual Provider Support (TypeSafe direct + OpenRouter Decisions)**:
-   * Supports **TypeSafe AI direct API** (`https://api.typesafe.ai/v1/systemone` using model `jev-latest`, baseUrl `https://api.typesafe.ai`).
-   * Supports **OpenRouter Decisions API** (`https://openrouter.ai/api/alpha/decisions` using model `typesafe/jev-1.13`).
+2. **Native Pi 1.0.0 Classifier Integration**:
+   * Calls TypeSafe's Jev model through Pi's native `ctx.modelRegistry.classify()` using question type `"bool"`.
+   * Automatically uses your existing Pi credentials (e.g. `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, or OpenRouter `/login` OAuth session).
+   * Zero external runtime SDK dependencies.
+   * Intercepts both `bash` and Windows `powershell` tools alongside `read`.
 
 3. **Compliant Agent Warning**:
    When blocked, the tool call is halted and returns the exact prompt instruction:
